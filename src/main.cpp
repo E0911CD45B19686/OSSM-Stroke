@@ -11,6 +11,9 @@
 #include <WiFi.h>
 #include "ModbusClientRTU.h"
 #include "OneButton.h"
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEServer.h>
 
 
 #define BTN_NONE   0
@@ -157,6 +160,7 @@ StrokeEngine Stroker;
 // planning the motion profile (this task is high level only and does not pulse
 // the stepper!)
 
+TaskHandle_t bldedisc_t = nullptr;
 TaskHandle_t estop_T    = nullptr;  // Estop Taks for Emergency 
 TaskHandle_t CRemote_T  = nullptr;  // Cable Remote Task 
 TaskHandle_t eRemote_t  = nullptr;  // Esp Now Remote
@@ -168,7 +172,53 @@ TaskHandle_t eRemote_t  = nullptr;  // Esp Now Remote
 #define NUM_LEDS 1
 CRGB leds[NUM_LEDS];
 
+///////////////////////////////////////////
+////
+////  Bluetooth
+////
+///////////////////////////////////////////
+
+// We use an Enum to define the Mode of our Device
+enum DeviceMode {
+  Waiting, // Not discovering, not timed out
+  Discovering, // We're in Discovery mode
+  Discovered,  // Discovery Succeeded
+  Failed,  // Discovery Failed (Timed Out)
+};
+
+DeviceMode deviceMode = Waiting; // We are initially Waiting
+
+BLEServer *bleServer;
+BLEService *bleService;
+BLECharacteristic *bleCharacteristic;
+BLEAdvertising *bleAdvertising;
+bool bleClientConnected = false;
+unsigned long discoveredAt;
+
+class BLECallbacks: public BLEServerCallbacks {
+   void onConnect(BLEServer* pServer) {
+      Serial.println("BLE Client Connected!");
+      bleClientConnected = true;
+    };
+
+    void onDisconnect(BLEServer* pServer) {
+      Serial.println("BLE Client Disconnected!");
+      bleClientConnected = false;
+      deviceMode = Discovered;
+      discoveredAt = 0;
+      vTaskDelete(bldedisc_t);
+    } 
+};
+
+///////////////////////////////////////////
+////
+////  Tasks
+////
+///////////////////////////////////////////
+
+
 // Declarations
+void blediscovery(void *pvParameters); //Handles 
 void emergencyStopTask(void *pvParameters); // Handels all Higher Emergency Stop Functions
 void CableRemoteTask(void *pvParameters);  // Handels all Functions from Cable Remote
 void espNowRemoteTask(void *pvParameters); // Handels the EspNow Remote
@@ -325,6 +375,7 @@ void setup() {
   FastLED.setBrightness(150);
   setLedRainbow(leds);
   FastLED.show();
+  BLEDevice::init("OSSM");
 
   MB.onDataHandler(&handleData);
   MB.onErrorHandler(&handleError);
@@ -371,6 +422,17 @@ void setup() {
                             &eRemote_t,         /* Task handle to keep track of created task */
                             0);                 /* pin task to core 0 */
   delay(100);
+
+  xTaskCreatePinnedToCore(blediscovery,      /* Task function. */
+                            "blediscovery",  /* name of task. */
+                            8096,               /* Stack size of task */
+                            NULL,               /* parameter of the task */
+                            5,                  /* priority of the task */
+                            &bldedisc_t,         /* Task handle to keep track of created task */
+                            0);                 /* pin task to core 0 */
+  delay(100);
+  vTaskSuspend(bldedisc_t);
+
   
 
   if(!g_ui.DisplayIsConnected()){
@@ -397,12 +459,64 @@ void setup() {
   Stroker.setSpeed(0.0, true);
   Stroker.setDepth(0.0, true);
   Stroker.setStroke(0.0, true);
+
+    BLEDevice::init("OSSM");
+  if (bleServer == nullptr) {
+    Serial.println("First Time Discovering");
+    // Get the MAC Address
+    WiFi.mode(WIFI_STA);
+    uint8_t mac[6];
+    if(WiFiGenericClass::getMode() == WIFI_MODE_NULL){
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    }
+
+    // Prepare our BLE Server
+    bleServer = BLEDevice::createServer();
+    bleServer->setCallbacks(new BLECallbacks());
+
+    // Prepare our Service
+    bleService = bleServer->createService(UUID_SERVICE);
+
+    // A Characteristic is what we shall use to provide Clients/Slaves with our MAC Address.
+    bleCharacteristic = bleService->createCharacteristic(UUID_CHARACTERISTIC, BLECharacteristic::PROPERTY_READ);
+
+    // Provide our Characteristic with the MAC Address "Payload"
+    bleCharacteristic->setValue(&mac[0], 6);
+    // Make the Property visible to Clients/Slaves.
+    bleCharacteristic->setBroadcastProperty(true);
+
+    // Start the BLE Service
+    bleService->start();
+  
+    // Advertise it!
+    bleAdvertising = BLEDevice::getAdvertising();
+    bleAdvertising->addServiceUUID(UUID_SERVICE);
+    bleAdvertising->setScanResponse(true);
+    bleAdvertising->setMinPreferred(0x06);
+    bleAdvertising->setMinPreferred(0x12);
+    BLEDevice::startAdvertising();
+  }
+  
+  // Start the BLE Service
+  bleService->start();
+
+  // Advertise it!
+  bleAdvertising = BLEDevice::getAdvertising();
+  BLEDevice::startAdvertising();
 }
 
 void loop() {
   g_ui.UpdateScreen();
   //PED.tick();
   //ALM.tick();
+}
+
+void blediscovery(void *pvParameters)
+{
+for (;;)
+{
+}
+vTaskDelay(200);
 }
 
 void emergencyStopTask(void *pvParameters)

@@ -35,3 +35,6 @@ const float commandDeadzonePercentage = 1.0f;
 //OSSM M5 Remote MAC
 
 uint8_t broadcastAddress[] = {0x08, 0x3A, 0xF2, 0x68, 0x1E, 0x74};
+
+#define UUID_SERVICE          "2fd86847-c1b5-4ac4-9902-2f41781b0010"
+#define UUID_CHARACTERISTIC   "4d3ed67c-9160-46d5-aec8-6902d5e328af"
